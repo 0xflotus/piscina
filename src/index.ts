@@ -5,12 +5,25 @@ import { AsyncResource } from 'async_hooks';
 import { cpus } from 'os';
 import { fileURLToPath, URL } from 'url';
 import { resolve } from 'path';
-import { inspect } from 'util';
+import { inspect, types } from 'util';
 import assert from 'assert';
 import { Histogram, build } from 'hdr-histogram-js';
 import { performance } from 'perf_hooks';
 import hdrobj from 'hdr-histogram-percentiles-obj';
-import { ReadyMessage, RequestMessage, ResponseMessage, StartupMessage, commonState, kResponseCountField, kRequestCountField, kFieldCount } from './common';
+import {
+  ReadyMessage,
+  RequestMessage,
+  ResponseMessage,
+  StartupMessage,
+  commonState,
+  kResponseCountField,
+  kRequestCountField,
+  kFieldCount,
+  Transferable,
+  isTransferable,
+  markMovable,
+  isMovable
+} from './common';
 import { version } from '../package.json';
 
 const cpuCount : number = (() => {
@@ -84,6 +97,28 @@ const kDefaultOptions : FilledOptions = {
   useAtomics: true
 };
 
+class DirectlyTransferable implements Transferable {
+  #value : any;
+  constructor (value : any) {
+    this.#value = value;
+  }
+
+  get transferable () : any { return this.#value; }
+
+  valueOf () : any { return this.#value; }
+}
+
+class ArrayBufferViewTransferable implements Transferable {
+  #view : ArrayBufferView;
+  constructor (view : ArrayBufferView) {
+    this.#view = view;
+  }
+
+  get transferable () : any { return this.#view.buffer; }
+
+  valueOf () : any { return this.#view; }
+}
+
 let taskIdCounter = 0;
 
 type TaskCallback = (err : Error, result: any) => void;
@@ -121,6 +156,19 @@ class TaskInfo extends AsyncResource {
     this.callback = callback;
     this.task = task;
     this.transferList = transferList;
+
+    // If the task is a Transferable returned by
+    // Piscina.move(), then add it to the transferList
+    // automatically
+    if (isMovable(task)) {
+      if (this.transferList === undefined) {
+        this.transferList = [];
+      }
+      this.transferList =
+        this.transferList.concat(task.transferable);
+      this.task = task.valueOf();
+    }
+
     this.filename = filename;
     this.taskId = taskIdCounter++;
     this.abortSignal = abortSignal;
@@ -859,6 +907,22 @@ class Piscina extends EventEmitterAsyncResource {
 
   static get Piscina () {
     return Piscina;
+  }
+
+  static move (val : any) {
+    if (!isTransferable(val)) {
+      if (types.isAnyArrayBuffer(val)) {
+        val = new DirectlyTransferable(val);
+      } else if ((types as any).isArrayBufferView(val)) {
+        val = new ArrayBufferViewTransferable(val as ArrayBufferView);
+      } else if (val instanceof MessagePort) {
+        val = new DirectlyTransferable(val);
+      } else {
+        throw new TypeError('value is not transferable');
+      }
+    }
+    markMovable(val);
+    return val;
   }
 }
 

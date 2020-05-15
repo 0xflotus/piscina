@@ -424,6 +424,70 @@ Is `true` if this code runs inside a `Piscina` threadpool as a Worker.
 
 Provides the current version of this library as a semver string.
 
+### Static method: `move(value)`
+
+By default, any value returned by a worker function will be cloned when
+returned back to the Piscina pool, even if that object is capable of
+being transfered. The `Piscina.move()` method can be used to wrap and
+mark transferable values such that they will by transfered rather than
+cloned.
+
+The `value` may be any object supported by Node.js to be transferable
+(e.g. `ArrayBuffer`, any `TypedArray`, or `MessagePort`), or any object
+implementing the `Transferable` interface.
+
+```js
+const { move } = require('piscina');
+
+module.exports = () => {
+  return move(new ArrayBuffer(10));
+}
+```
+
+The `move()` method will throw if the `value` is not transferable.
+
+The object returned by the `move()` method should not be set as a
+nested value in an object. If it is used, the `move()` object itself
+will be cloned as opposed to transfering the object it wraps.
+
+#### Interface: `Transferable`
+
+Objects may implement the `Transferable` interface to create their own
+custom transferable objects. This is useful when an object being
+passed into or from a worker contains a deeply nested transferable
+object such as an `ArrayBuffer` or `MessagePort`.
+
+A `Transferable` object is any object that exposes a public `transferable`
+property that provides an array of values that should be listed in the
+`transferList` that Piscina uses to communicate across threads.
+
+`Transferable` objects *should* also implement `valueOf()` function that
+returns a surrogate value to transmit in place of the `Transferable`
+itself.
+
+For example,
+
+```js
+const { move } = require('piscina');
+
+module.exports = () => {
+  const obj = {
+    a: { b: new Uint8Array(5); },
+    c: { new Uint8Array(10); },
+
+    valueOf() {
+      return { a: { b: this.b }, c: this.c };
+    }
+
+    get transferable() {
+      // Transfer the two underlying ArrayBuffers
+      return [this.a.b.buffer, this.c.buffer];
+    }
+  };
+  return move(obj);
+};
+```
+
 ## Current Limitations (Things we're working on / would love help with)
 
 * Improved Documentation
